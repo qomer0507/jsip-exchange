@@ -18,9 +18,10 @@ val with_server
     the just-submitted request. *)
 type client
 
-(** Connect a client to [port]. The [participant] argument is accepted for
-    forward-compatibility with the planned login RPC but is currently ignored
-    — the server does not yet associate connections with participants. *)
+(** Connect a client to [port]. an expect test that binds on rpc_submit will
+    see the same per-participant events a real interactive client would
+    receive on its feed, prefixed by the participant so multi-client tests
+    stay legible *)
 val connect_as : port:int -> Participant.t -> client Deferred.t
 
 (** The raw RPC connection, useful for tests that exercise unusual RPC paths

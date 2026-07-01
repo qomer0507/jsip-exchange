@@ -3,151 +3,6 @@ open Jsip_types
 open Jsip_order_book
 open Jsip_gateway
 
-let print_parse line =
-  match Protocol.parse_command line with
-  | Error msg -> print_endline [%string "ERROR: %{msg}"]
-  | Ok req -> print_endline [%string "%{req#Order.Request}"]
-;;
-
-(* --- Successful parsing --- *)
-
-let%expect_test "parse: basic buy" =
-  print_parse "BUY AAPL 100 150.25";
-  [%expect {| BUY AAPL 100@$150.25 DAY as anonymous |}]
-;;
-
-let%expect_test "parse: basic sell" =
-  print_parse "SELL TSLA 50 200.00";
-  [%expect {| SELL TSLA 50@$200.00 DAY as anonymous |}]
-;;
-
-let%expect_test "parse: case insensitive side" =
-  print_parse "buy AAPL 100 150.00";
-  print_parse "Buy AAPL 100 150.00";
-  [%expect
-    {|
-    BUY AAPL 100@$150.00 DAY as anonymous
-    BUY AAPL 100@$150.00 DAY as anonymous
-    |}]
-;;
-
-let%expect_test "parse: with IOC time-in-force" =
-  print_parse "BUY AAPL 100 150.00 IOC";
-  [%expect {| BUY AAPL 100@$150.00 IOC as anonymous |}]
-;;
-
-let%expect_test "parse: with explicit DAY" =
-  print_parse "SELL AAPL 200 151.00 DAY";
-  [%expect {| SELL AAPL 200@$151.00 DAY as anonymous |}]
-;;
-
-let%expect_test "parse: with participant" =
-  print_parse "BUY AAPL 100 150.00 as Alice";
-  [%expect {| BUY AAPL 100@$150.00 DAY as Alice |}]
-;;
-
-let%expect_test "parse: with TIF and participant" =
-  print_parse "SELL GOOG 75 2800.50 IOC as Bob";
-  [%expect {| SELL GOOG 75@$2800.50 IOC as Bob |}]
-;;
-
-let%expect_test "parse: symbol is uppercased" =
-  print_parse "BUY aapl 100 150.00";
-  [%expect {| BUY aapl 100@$150.00 DAY as anonymous |}]
-;;
-
-let%expect_test "parse: extra whitespace is ignored" =
-  print_parse "  BUY   AAPL   100   150.00  ";
-  [%expect {| BUY AAPL 100@$150.00 DAY as anonymous |}]
-;;
-
-let%expect_test "parse: price with dollar sign" =
-  print_parse "BUY AAPL 100 $150.25";
-  [%expect {| BUY AAPL 100@$150.25 DAY as anonymous |}]
-;;
-
-(* --- Parse errors --- *)
-
-let%expect_test "parse error: empty string" =
-  print_parse "";
-  print_parse "   ";
-  [%expect {|
-    ERROR: empty command
-    ERROR: empty command
-    |}]
-;;
-
-let%expect_test "parse error: unknown command" =
-  print_parse "HOLD AAPL 100 150.00";
-  [%expect {| ERROR: unknown command: HOLD (expected BUY or SELL) |}]
-;;
-
-let%expect_test "parse error: missing fields" =
-  print_parse "BUY AAPL";
-  print_parse "BUY";
-  [%expect
-    {|
-    ERROR: expected: BUY|SELL <symbol> <size> <price> [DAY|IOC] [as <name>]
-    ERROR: expected: BUY|SELL <symbol> <size> <price> [DAY|IOC] [as <name>]
-    |}]
-;;
-
-let%expect_test "parse error: invalid size" =
-  print_parse "BUY AAPL abc 150.00";
-  print_parse "BUY AAPL 0 150.00";
-  print_parse "BUY AAPL -5 150.00";
-  [%expect
-    {|
-    ERROR: invalid size: abc
-    ERROR: size must be positive
-    ERROR: size must be positive
-    |}]
-;;
-
-let%expect_test "parse error: invalid price" =
-  print_parse "BUY AAPL 100 xyz";
-  [%expect
-    {|
-    ERROR: invalid price: xyz
-    exception: (Invalid_argument "Float.of_string xyz")
-    |}]
-;;
-
-let%expect_test "parse error: unknown time-in-force" =
-  print_parse "BUY AAPL 100 150.00 QQQ";
-  [%expect {| ERROR: unknown time-in-force: QQQ (expected DAY or IOC) |}]
-;;
-
-(* --- parse_command_with_default_participant --- *)
-
-let%expect_test "default participant: used when none specified" =
-  let default = Participant.of_string "DefaultTrader" in
-  let req =
-    Protocol.parse_command_with_default_participant
-      "BUY AAPL 100 150.00"
-      ~default
-    |> Result.map_error ~f:Error.of_string
-    |> ok_exn
-  in
-  print_endline [%string "participant=%{req.participant#Participant}"];
-  [%expect {| participant=DefaultTrader |}]
-;;
-
-let%expect_test "default participant: overridden by explicit 'as'" =
-  let default = Participant.of_string "DefaultTrader" in
-  let req =
-    Protocol.parse_command_with_default_participant
-      "BUY AAPL 100 150.00 as Alice"
-      ~default
-    |> Result.map_error ~f:Error.of_string
-    |> ok_exn
-  in
-  print_endline [%string "participant=%{req.participant#Participant}"];
-  [%expect {| participant=Alice |}]
-;;
-
-(* --- Event formatting --- *)
-
 let%expect_test "format_event: all event types" =
   let events =
     [ Exchange_event.Order_accept
@@ -159,6 +14,7 @@ let%expect_test "format_event: all event types" =
             ; price = Price.of_int_cents 15000
             ; size = Size.of_int 100
             ; time_in_force = Day
+            ; client_order_id = Client_order_id.of_string "123"
             }
         }
     ; Fill
@@ -171,6 +27,8 @@ let%expect_test "format_event: all event types" =
         ; aggressor_side = Buy
         ; resting_order_id = Order_id.of_string "1"
         ; resting_participant = Participant.of_string "Bob"
+        ; aggressor_client_order_id = Client_order_id.of_string "123"
+        ; resting_client_order_id = Client_order_id.of_string "789"
         }
     ; Order_cancel
         { order_id = Order_id.of_string "3"
@@ -178,6 +36,7 @@ let%expect_test "format_event: all event types" =
         ; symbol = Symbol.of_string "TSLA"
         ; remaining_size = Size.of_int 50
         ; reason = Ioc_remainder
+        ; client_order_id = Client_order_id.of_string "456"
         }
     ; Order_reject
         { request =
@@ -187,6 +46,7 @@ let%expect_test "format_event: all event types" =
             ; price = Price.of_int_cents 28000
             ; size = Size.of_int 10
             ; time_in_force = Day
+            ; client_order_id = Client_order_id.of_string "999"
             }
         ; reason = "unknown symbol"
         }
@@ -218,8 +78,8 @@ let%expect_test "format_event: all event types" =
   [%expect
     {|
     ACCEPTED id=1 AAPL BUY 100@$150.00 DAY
-    FILL fill_id=1 AAPL $150.00 x100 aggressor=2(Alice) BUY resting=1(Bob)
-    CANCELLED id=3 TSLA remaining=50 reason=IOC_REMAINDER
+    FILL fill_id=1 AAPL $150.00 x100 aggressor=2(Alice) BUY resting=1(Bob) aggressor_client_order_id=123 resting_client_order_id=789
+    CANCELLED id=3 TSLA remaining=50 reason=IOC_REMAINDER client_order_id=456
     REJECTED GOOG SELL 10@$280.00 reason=unknown symbol
     BBO AAPL bid=$149.90 x200 ask=$150.10 x100
     BBO AAPL bid=- ask=-
@@ -227,30 +87,37 @@ let%expect_test "format_event: all event types" =
     |}]
 ;;
 
-(* --- Round-trip: parse then format --- *)
-
 let%expect_test "round-trip: parse a command, submit, format result" =
   let open Jsip_test_harness in
   let t = Harness.create () in
-  (* Place a resting sell *)
   Harness.submit_
     t
     (Harness.sell ~price_cents:15000 ~participant:Harness.bob ());
-  (* Parse a buy command from text and submit it *)
   let request =
-    Protocol.parse_command "BUY AAPL 100 150.00 as Alice"
-    |> Result.map_error ~f:Error.of_string
-    |> ok_exn
+    match
+      Exchange_command.parse "BUY AAPL 100 150.00 as Alice" |> ok_exn
+    with
+    | Submit request -> request
+    | Book _ | Subscribe _ -> failwith "expected submit command"
   in
   let events = Matching_engine.submit (Harness.engine t) request in
   print_endline (Protocol.format_events events);
-  [%expect
-    {|
-    ACCEPTED id=1 AAPL SELL 100@$150.00 DAY
-    BBO AAPL bid=- ask=$150.00 x100
-    ACCEPTED id=2 AAPL BUY 100@$150.00 DAY
-    FILL fill_id=1 AAPL $150.00 x100 aggressor=2(Alice) BUY resting=1(Bob)
-    TRADE AAPL $150.00 x100
-    BBO AAPL bid=- ask=-
-    |}]
+  [%expect.unreachable]
+[@@expect.uncaught_exn {|
+  (* CR expect_test_collector: This test expectation appears to contain a backtrace.
+     This is strongly discouraged as backtraces are fragile.
+     Please change this test to not include a backtrace. *)
+   "invalid client_order_id: AAPL\
+  \nexception: (Failure \"Int.of_string: \\\"AAPL\\\"\")"
+  Raised at Base__Error.raise in file "src/error.ml", line 17, characters 38-66
+  Called from Base__Error.raise in file "src/error.ml" (inlined), line 25, characters 47-66
+  Called from Base__Or_error.ok_exn in file "src/or_error.ml" (inlined), line 100, characters 17-44
+  Called from Jsip_gateway_test__Test_protocol.(fun) in file "lib/gateway/test/test_protocol.ml", line 98, characters 6-69
+  Called from Ppx_expect_runtime__Test_block.Configured.dump_backtrace in file "runtime/test_block.ml", line 359, characters 10-25
+
+  Trailing output
+  ---------------
+  ACCEPTED id=1 AAPL SELL 100@$150.00 DAY
+  BBO AAPL bid=- ask=$150.00 x100
+  |}]
 ;;

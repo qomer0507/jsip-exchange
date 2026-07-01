@@ -74,3 +74,87 @@ let%expect_test "negative to_string_dollar" =
   print_endline (Price.to_string_dollar (Price.of_int_cents (-150)));
   [%expect {| -$1.50 |}]
 ;;
+
+let%expect_test "Equal prices" =
+  [%test_result: bool]
+    (Price.is_more_aggressive
+       Side.Buy
+       ~price:(Price.of_int_cents 150)
+       ~than:(Price.of_int_cents 150))
+    ~expect:false
+;;
+
+let%expect_test "Equal prices" =
+  [%test_result: bool]
+    (Price.is_more_aggressive
+       Sell
+       ~price:(Price.of_int_cents 150)
+       ~than:(Price.of_int_cents 150))
+    ~expect:false
+;;
+
+let%expect_test "buy more aggressive" =
+  print_s
+    [%sexp
+      (Price.is_more_aggressive
+         Buy
+         ~price:(Price.of_int_cents 101)
+         ~than:(Price.of_int_cents 100)
+       : bool)];
+  [%expect {| true |}]
+;;
+
+let%expect_test "sell more aggressive" =
+  print_s
+    [%sexp
+      (Price.is_more_aggressive
+         Sell
+         ~price:(Price.of_int_cents 99)
+         ~than:(Price.of_int_cents 100)
+       : bool)];
+  [%expect {| true |}]
+;;
+
+let%expect_test "equal prices not more aggressive" =
+  print_s
+    [%sexp
+      (Price.is_more_aggressive
+         Buy
+         ~price:(Price.of_int_cents 100)
+         ~than:(Price.of_int_cents 100)
+       : bool)];
+  [%expect {| false |}]
+;;
+
+let%expect_test "buy marketable" =
+  print_s
+    [%sexp
+      (Price.is_marketable
+         Buy
+         ~price:(Price.of_int_cents 101)
+         ~resting_price:(Price.of_int_cents 100)
+       : bool)];
+  [%expect {| true |}]
+;;
+
+let%expect_test "sell marketable" =
+  print_s
+    [%sexp
+      (Price.is_marketable
+         Sell
+         ~price:(Price.of_int_cents 99)
+         ~resting_price:(Price.of_int_cents 100)
+       : bool)];
+  [%expect {| true |}]
+;;
+
+let%expect_test "equal price marketable" =
+  print_s
+    [%sexp
+      (Price.is_marketable
+         Buy
+         ~price:(Price.of_int_cents 100)
+         ~resting_price:(Price.of_int_cents 100)
+       : bool)];
+  [%expect {| true |}]
+;;

@@ -16,6 +16,12 @@ module Config = struct
 end
 
 let seed_book (config : Config.t) conn =
+  let%bind _participant =
+    Rpc.Rpc.dispatch_exn
+      Rpc_protocol.login_rpc
+      conn
+      (Participant.to_string config.participant)
+  in
   let submit request =
     let%map result =
       Rpc.Rpc.dispatch_exn Rpc_protocol.submit_order_rpc conn request
@@ -41,6 +47,7 @@ let seed_book (config : Config.t) conn =
            ; price = Price.of_int_cents (config.fair_value_cents - offset)
            ; size = Size.of_int config.size_per_level
            ; time_in_force = Day
+           ; client_order_id = Client_order_id.of_string "123"
            }
            : Order.Request.t)
       and () =
@@ -51,6 +58,7 @@ let seed_book (config : Config.t) conn =
            ; price = Price.of_int_cents (config.fair_value_cents + offset)
            ; size = Size.of_int config.size_per_level
            ; time_in_force = Day
+           ; client_order_id = Client_order_id.of_string "123"
            }
            : Order.Request.t)
       in

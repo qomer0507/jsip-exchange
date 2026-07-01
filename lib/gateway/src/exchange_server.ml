@@ -11,12 +11,11 @@ type t =
   ; port : int
   }
 
-(* Bound how many client requests can sit in the queue waiting for the
-   matching engine. Once the queue is full, [Pipe.write] returns a pending
-   deferred and the [submit_order_rpc] handler blocks until the engine has
-   processed enough requests to free up space — clients get backpressure
-   without the server's memory growing unboundedly. *)
 let request_queue_size_budget = 1024
+
+module Connection_state = struct
+  type t = { mutable session : Session.t option }
+end
 
 let handle_submit ~request_writer (request : Order.Request.t) =
   let%map () = Pipe.write_if_open request_writer request in
@@ -41,9 +40,13 @@ let start ~symbols ~port () =
       ~implementations:
         [ Rpc.Rpc.implement
             Rpc_protocol.submit_order_rpc
-            (fun state request ->
-               ignore state;
-               handle_submit ~request_writer request)
+            (fun (state : Connection_state.t) request ->
+               match state.session with
+               | Some session ->
+                 let participant = Session.participant session in
+                 let request = { request with participant } in
+                 handle_submit ~request_writer request
+               | None -> return (Or_error.error_string "not logged in"))
         ; Rpc.Rpc.implement' Rpc_protocol.book_query_rpc (fun state symbol ->
             ignore state;
             Matching_engine.book engine symbol
@@ -60,6 +63,37 @@ let start ~symbols ~port () =
             ignore state;
             let reader = Dispatcher.subscribe_audit dispatcher in
             return (Ok reader))
+        ; Rpc.Rpc.implement
+            Rpc_protocol.login_rpc
+            (fun (state : Connection_state.t) name ->
+               let name = String.strip name in
+               if String.is_empty name
+               then return (Or_error.error_string "Name is empty")
+               else (
+                 let participant = Participant.of_string name in
+                 let%map session =
+                   Dispatcher.set_up_session dispatcher participant
+                 in
+                 state.session <- Some session;
+                 Ok participant))
+        ; Rpc.Pipe_rpc.implement
+            Rpc_protocol.session_feed_rpc
+            (fun (state : Connection_state.t) () ->
+               match state.session with
+               | Some session -> return (Ok (Session.reader session))
+               | None -> return (Or_error.error_string "not logged in"))
+        ; Rpc.Rpc.implement
+            Rpc_protocol.cancel_order_rpc
+            (fun (state : Connection_state.t) client_order_id ->
+               match state.session with
+               | Some session ->
+                 let participant = Session.participant session in
+                 let events =
+                   Matching_engine.cancel engine participant client_order_id
+                 in
+                 Dispatcher.dispatch dispatcher events;
+                 return (Ok ())
+               | None -> return (Or_error.error_string "not logged in"))
         ]
       ~on_unknown_rpc:`Close_connection
       ~on_exception:Log_on_background_exn
@@ -67,7 +101,14 @@ let start ~symbols ~port () =
   let%map tcp_server =
     Rpc.Connection.serve
       ~implementations
-      ~initial_connection_state:(fun _addr _conn -> ())
+      ~initial_connection_state:(fun _addr conn ->
+        let state = { Connection_state.session = None } in
+        don't_wait_for
+          (let%bind () = Rpc.Connection.close_finished conn in
+           match state.session with
+           | Some session -> Dispatcher.clean_up_session dispatcher session
+           | None -> Deferred.return ());
+        state)
       ~where_to_listen:(Tcp.Where_to_listen.of_port port)
       ()
   in

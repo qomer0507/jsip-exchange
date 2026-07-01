@@ -1,10 +1,25 @@
 open! Core
 open Jsip_types
 
+module Participant_client_order_id = struct
+  module T = struct
+    type t =
+      { participant : Participant.t
+      ; client_order_id : Client_order_id.t
+      }
+    [@@deriving sexp, compare]
+  end
+
+  include T
+  include Comparable.Make (T)
+end
+
 type t =
   { books : Order_book.t Symbol.Map.t
   ; order_id_gen : Order_id.Generator.t
   ; mutable next_fill_id : int
+  ; mutable seen_client_order_ids :
+      (Order_id.t * Order.t) Participant_client_order_id.Map.t
   }
 [@@deriving sexp_of]
 
@@ -13,7 +28,11 @@ let create symbols =
     List.map symbols ~f:(fun sym -> sym, Order_book.create sym)
     |> Symbol.Map.of_alist_exn
   in
-  { books; order_id_gen = Order_id.Generator.create (); next_fill_id = 1 }
+  { books
+  ; order_id_gen = Order_id.Generator.create ()
+  ; next_fill_id = 1
+  ; seen_client_order_ids = Participant_client_order_id.Map.empty
+  }
 ;;
 
 let book t symbol = Map.find t.books symbol
@@ -46,6 +65,8 @@ let rec match_loop ~book ~order ~fill_id =
           ; aggressor_side = Order.side order
           ; resting_order_id = Order.order_id resting
           ; resting_participant = Order.participant resting
+          ; aggressor_client_order_id = Order.client_order_id order
+          ; resting_client_order_id = Order.client_order_id resting
           }
       in
       let trade_event =
@@ -61,49 +82,104 @@ let rec match_loop ~book ~order ~fill_id =
       fill_event :: trade_event :: remaining_events, next_fill_id)
 ;;
 
+(* let cancel t ~participant ~client_order_id = let order = Map.find
+   t.seen_client_order_ids [{ participant; client_order_id }] in match order
+   with | None ->
+   [ Exchange_event.Cancel_reject { participant; client_order_id; reason = "unknown client order ID" } ] *)
 let submit t (request : Order.Request.t) =
-  match Map.find t.books request.symbol with
+  (* check for duplicate client order IDs *)
+  let key =
+    { Participant_client_order_id.participant = request.participant
+    ; client_order_id = request.client_order_id
+    }
+  in
+  if Map.mem t.seen_client_order_ids key
+  then
+    [ Exchange_event.Order_reject
+        { request; reason = "duplicate client order ID" }
+    ]
+  else (
+    match Map.find t.books request.symbol with
+    | None ->
+      [ Exchange_event.Order_reject { request; reason = "unknown symbol" } ]
+    | Some book ->
+      let order_id = Order_id.Generator.next t.order_id_gen in
+      let order = Order.create request ~order_id in
+      let accepted = Exchange_event.Order_accept { order_id; request } in
+      (* Snapshot BBO before matching so we can detect changes. *)
+      let bbo_before = Order_book.best_bid_offer book in
+      (* Match *)
+      let fill_events, next_fill_id =
+        match_loop ~book ~order ~fill_id:t.next_fill_id
+      in
+      t.next_fill_id <- next_fill_id;
+      (* Post-match: rest on book or cancel unfilled remainder. *)
+      let post_events =
+        if Size.( > ) (Order.remaining_size order) Size.zero
+        then (
+          match Order.time_in_force order with
+          | Day ->
+            Order_book.add book order;
+            []
+          | Ioc ->
+            [ Exchange_event.Order_cancel
+                { order_id
+                ; participant = Order.participant order
+                ; symbol = Order.symbol order
+                ; remaining_size = Order.remaining_size order
+                ; reason = Ioc_remainder
+                ; client_order_id = Order.client_order_id order
+                }
+            ])
+        else []
+      in
+      (* Emit BBO update if the best bid or ask changed. *)
+      let bbo_after = Order_book.best_bid_offer book in
+      let bbo_events =
+        if Bbo.equal bbo_before bbo_after
+        then []
+        else
+          [ Exchange_event.Best_bid_offer_update
+              { symbol = Order.symbol order; bbo = bbo_after }
+          ]
+      in
+      List.concat [ [ accepted ]; fill_events; post_events; bbo_events ])
+;;
+
+let cancel t participant client_order_id =
+  let key = { Participant_client_order_id.participant; client_order_id } in
+  match Map.find t.seen_client_order_ids key with
   | None ->
-    [ Exchange_event.Order_reject { request; reason = "unknown symbol" } ]
-  | Some book ->
-    let order_id = Order_id.Generator.next t.order_id_gen in
-    let order = Order.create request ~order_id in
-    let accepted = Exchange_event.Order_accept { order_id; request } in
-    (* Snapshot BBO before matching so we can detect changes. *)
-    let bbo_before = Order_book.best_bid_offer book in
-    (* Match *)
-    let fill_events, next_fill_id =
-      match_loop ~book ~order ~fill_id:t.next_fill_id
-    in
-    t.next_fill_id <- next_fill_id;
-    (* Post-match: rest on book or cancel unfilled remainder. *)
-    let post_events =
-      if Size.( > ) (Order.remaining_size order) Size.zero
-      then (
-        match Order.time_in_force order with
-        | Day ->
-          Order_book.add book order;
-          []
-        | Ioc ->
-          [ Exchange_event.Order_cancel
-              { order_id
-              ; participant = Order.participant order
-              ; symbol = Order.symbol order
-              ; remaining_size = Order.remaining_size order
-              ; reason = Ioc_remainder
-              }
-          ])
-      else []
-    in
-    (* Emit BBO update if the best bid or ask changed. *)
-    let bbo_after = Order_book.best_bid_offer book in
-    let bbo_events =
-      if Bbo.equal bbo_before bbo_after
-      then []
-      else
-        [ Exchange_event.Best_bid_offer_update
-            { symbol = Order.symbol order; bbo = bbo_after }
-        ]
-    in
-    List.concat [ [ accepted ]; fill_events; post_events; bbo_events ]
+    [ Exchange_event.Cancel_reject
+        { participant; client_order_id; reason = "unknown client order ID" }
+    ]
+  | Some (order_id, order) ->
+    (match Map.find t.books (Order.symbol order) with
+     | None ->
+       [ Exchange_event.Cancel_reject
+           { participant; client_order_id; reason = "unknown symbol" }
+       ]
+     | Some book ->
+       Order_book.remove book order_id;
+       let cancel_event =
+         Exchange_event.Order_cancel
+           { order_id
+           ; participant
+           ; symbol = Order.symbol order
+           ; remaining_size = Order.remaining_size order
+           ; reason = Participant_requested
+           ; client_order_id
+           }
+       in
+       let bbo_before = Order_book.best_bid_offer book in
+       let bbo_after = Order_book.best_bid_offer book in
+       let bbo_events =
+         if Bbo.equal bbo_before bbo_after
+         then []
+         else
+           [ Exchange_event.Best_bid_offer_update
+               { symbol = Order.symbol order; bbo = bbo_after }
+           ]
+       in
+       cancel_event :: bbo_events)
 ;;

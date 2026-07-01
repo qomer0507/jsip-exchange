@@ -41,6 +41,7 @@ let make_request
   ; price = Price.of_int_cents price_cents
   ; size = Size.of_int size
   ; time_in_force
+  ; client_order_id = Client_order_id.of_string "123"
   }
 ;;
 
@@ -100,6 +101,7 @@ let sample_events : Exchange_event.t list =
     ; price = Price.of_int_cents 15000
     ; size = Size.of_int 100
     ; time_in_force = Day
+    ; client_order_id = Client_order_id.of_string "123"
     }
   in
   [ Order_accept
@@ -114,6 +116,8 @@ let sample_events : Exchange_event.t list =
       ; aggressor_side = Buy
       ; resting_order_id = Order_id.For_testing.of_int 1
       ; resting_participant = bob
+      ; aggressor_client_order_id = Client_order_id.of_string "123"
+      ; resting_client_order_id = Client_order_id.of_string "789"
       }
   ; Order_cancel
       { order_id = Order_id.For_testing.of_int 1
@@ -121,6 +125,7 @@ let sample_events : Exchange_event.t list =
       ; symbol = aapl
       ; remaining_size = Size.of_int 50
       ; reason = Ioc_remainder
+      ; client_order_id = Client_order_id.of_string "123"
       }
   ; Order_reject { request = order_request; reason = "unknown symbol" }
   ; Best_bid_offer_update

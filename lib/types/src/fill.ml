@@ -10,8 +10,36 @@ type t =
   ; aggressor_side : Side.t
   ; resting_order_id : Order_id.t
   ; resting_participant : Participant.t
+  ; aggressor_client_order_id : Client_order_id.t
+  ; resting_client_order_id : Client_order_id.t
   }
 [@@deriving sexp, bin_io]
+
+let to_participant_view t (participant : Participant.t) =
+  if Participant.equal participant t.aggressor_participant
+  then (
+    match t.aggressor_side with
+    | Buy ->
+      Some
+        [%string
+          "You bought %{t.size#Size} %{t.symbol#Symbol} at %{t.price#Price}"]
+    | Sell ->
+      Some
+        [%string
+          "You sold %{t.size#Size} %{t.symbol#Symbol} at %{t.price#Price}"])
+  else if Participant.equal participant t.resting_participant
+  then (
+    match Side.flip t.aggressor_side with
+    | Buy ->
+      Some
+        [%string
+          "You bought %{t.size#Size} %{t.symbol#Symbol} at %{t.price#Price}"]
+    | Sell ->
+      Some
+        [%string
+          "You sold %{t.size#Size} %{t.symbol#Symbol} at %{t.price#Price}"])
+  else None
+;;
 
 let to_string
   ({ fill_id
@@ -23,11 +51,14 @@ let to_string
    ; aggressor_side
    ; resting_order_id
    ; resting_participant
+   ; aggressor_client_order_id
+   ; resting_client_order_id
    } :
     t)
   =
   sprintf
-    "fill_id=%d %s %s x%d aggressor=%s(%s) %s resting=%s(%s)"
+    "fill_id=%d %s %s x%d aggressor=%s(%s) %s resting=%s(%s) \
+     aggressor_client_order_id=%s resting_client_order_id=%s"
     fill_id
     (Symbol.to_string symbol)
     (Price.to_string_dollar price)
@@ -37,6 +68,8 @@ let to_string
     (Side.to_string aggressor_side)
     (Order_id.to_string resting_order_id)
     (Participant.to_string resting_participant)
+    (Client_order_id.to_string aggressor_client_order_id)
+    (Client_order_id.to_string resting_client_order_id)
 ;;
 
 let notional_cents t = Price.to_int_cents t.price * Size.to_int t.size
